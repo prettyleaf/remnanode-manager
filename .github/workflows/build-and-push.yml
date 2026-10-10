@@ -1,0 +1,140 @@
+name: Build&Push Release Docker Image
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Go vet & test
+        run: |
+          go vet ./...
+          go test ./...
+
+  build-docker-images:
+    name: Build & push
+    needs: [test]
+    # Manual runs must be started from a tag: the tag name becomes the version.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Prepare build metadata
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "major=${GITHUB_REF_NAME%%.*}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.major }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BRANCH=main
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+            REPOSITORY=${{ github.repository }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect ${{ steps.meta.outputs.image }}:${{ github.ref_name }}
+
+  create-release:
+    name: Create release
+    needs: [build-docker-images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Find previous tag
+        id: tags
+        run: |
+          prev=$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -n1 || true)
+          echo "previous=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: v${{ github.ref_name }}
+          generate_release_notes: true
+          append_body: true
+          make_latest: true
+          draft: false
+          prerelease: false
+          body: |
+            🌊 Remnanode Manager v${{ github.ref_name }}
+
+            ${{ steps.tags.outputs.previous && format('**Full changelog**: {0}/{1}/compare/{2}...{3}', github.server_url, github.repository, steps.tags.outputs.previous, github.ref_name) || '' }}
+
+            Latest Docker image:
+            - `${{ needs.build-docker-images.outputs.image }}:latest`
+
+            Docker images:
+            - `${{ needs.build-docker-images.outputs.image }}:${{ github.ref_name }}`

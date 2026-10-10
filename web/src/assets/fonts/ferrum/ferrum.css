@@ -1,0 +1,16 @@
+/*
+ * Ferrum Trio (UI text) and Ferrum Mono (code, versions, addresses)
+ * https://github.com/ferrum-org/ferrum-font @ d3dc189 — Trio 1.197, Mono 1.262
+ * SIL Open Font License 1.1, served at /fonts/ferrum/OFL.txt
+ *
+ * Only the weights the UI uses are bundled; italics are synthesized if ever needed.
+ */
+@font-face { font-family: "Ferrum Trio"; font-style: normal; font-weight: 400; font-display: swap; src: url("./FerrumTrio-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Ferrum Trio"; font-style: normal; font-weight: 500; font-display: swap; src: url("./FerrumTrio-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Ferrum Trio"; font-style: normal; font-weight: 600; font-display: swap; src: url("./FerrumTrio-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Ferrum Trio"; font-style: normal; font-weight: 700; font-display: swap; src: url("./FerrumTrio-Bold.woff2") format("woff2"); }
+
+@font-face { font-family: "Ferrum Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("./FerrumMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Ferrum Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("./FerrumMono-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Ferrum Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("./FerrumMono-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Ferrum Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url("./FerrumMono-Bold.woff2") format("woff2"); }

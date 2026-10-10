@@ -1,0 +1,26 @@
+services:
+  remnanode-manager:
+    image: ghcr.io/prettyleaf/remnanode-manager:latest
+    container_name: remnanode-manager
+    hostname: remnanode-manager
+    restart: always
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    ports:
+      # Bound to localhost: publish it through your reverse proxy.
+      - 127.0.0.1:3100:3100
+    networks:
+      - remnawave-network
+    logging:
+      driver: json-file
+      options:
+        max-size: 30m
+        max-file: "3"
+
+# Shared with the Remnawave panel so the manager can reach it as
+# http://remnawave:3000. Remove this block if the panel runs elsewhere.
+networks:
+  remnawave-network:
+    name: remnawave-network
+    external: true

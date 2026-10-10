@@ -1,0 +1,10 @@
+.git
+.github
+.playwright-mcp
+data
+web/node_modules
+internal/webui/dist
+*.md
+!README.md
+docker-compose*.yml
+.env
