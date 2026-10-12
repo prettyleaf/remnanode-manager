@@ -62,6 +62,15 @@ func run() error {
 
 	version := buildinfo.Version
 	tg := notify.NewTelegram(func() settings.Telegram { return st.Settings().Telegram }, log)
+	// Delivery errors would otherwise only reach the container log.
+	tg.OnFailure(func(typ string, err error) {
+		e := store.Event{Level: "error", Type: "telegram_failed",
+			Message: fmt.Sprintf("Telegram notification %q was not delivered: %s", typ, err),
+			Meta:    map[string]any{"event": typ, "error": err.Error()}}
+		if err := st.AddEvent(ctx, e); err != nil {
+			log.Error("store event", "err", err)
+		}
+	})
 	ch := checker.New(st, tg, log, version)
 	updater := buildinfo.NewUpdater(cfg.UpdateCheck, log)
 	srv := server.New(cfg, st, ch, updater, log, webui.FS())

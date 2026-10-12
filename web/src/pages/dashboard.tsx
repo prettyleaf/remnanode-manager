@@ -109,7 +109,7 @@ export function DashboardPage() {
         <Alert>
           <FlaskConicalIcon />
           <AlertTitle>{t("dash.dryRun")}</AlertTitle>
-          <AlertDescription>{t("dash.dryRunDesc")}</AlertDescription>
+          <AlertDescription>{t(checker.telegram ? "dash.dryRunDesc" : "dash.dryRunDescNoTg")}</AlertDescription>
         </Alert>
       )}
       {!checker.enabled && (

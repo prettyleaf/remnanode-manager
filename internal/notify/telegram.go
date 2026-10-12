@@ -29,6 +29,7 @@ type Message struct {
 }
 
 type job struct {
+	typ  string
 	cfg  settings.Telegram
 	text string
 }
@@ -37,6 +38,7 @@ type Telegram struct {
 	settings func() settings.Telegram
 	log      *slog.Logger
 	queue    chan job
+	onFail   func(typ string, err error)
 }
 
 func NewTelegram(get func() settings.Telegram, log *slog.Logger) *Telegram {
@@ -45,6 +47,10 @@ func NewTelegram(get func() settings.Telegram, log *slog.Logger) *Telegram {
 
 func Esc(s string) string { return html.EscapeString(s) }
 
+// OnFailure registers a callback for event messages that could not be
+// delivered. It must be set before Run is started.
+func (t *Telegram) OnFailure(fn func(typ string, err error)) { t.onFail = fn }
+
 // Run delivers queued messages until ctx is cancelled.
 func (t *Telegram) Run(ctx context.Context) {
 	for {
@@ -52,15 +58,20 @@ func (t *Telegram) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case j := <-t.queue:
+			var errs []error
 			for _, chat := range j.cfg.ChatIDs {
 				if err := send(ctx, j.cfg, chat, j.text); err != nil {
-					t.log.Warn("telegram delivery failed", "chat", chat, "err", err)
+					t.log.Warn("telegram delivery failed", "type", j.typ, "chat", chat, "err", err)
+					errs = append(errs, fmt.Errorf("chat %s: %w", chat, err))
 				}
 				select {
 				case <-ctx.Done():
 					return
 				case <-time.After(100 * time.Millisecond):
 				}
+			}
+			if len(errs) > 0 && t.onFail != nil {
+				t.onFail(j.typ, errors.Join(errs...))
 			}
 		}
 	}
@@ -70,10 +81,12 @@ func (t *Telegram) Run(ctx context.Context) {
 func (t *Telegram) Notify(m Message) {
 	cfg := t.settings()
 	if !cfg.Enabled || cfg.BotToken == "" || len(cfg.ChatIDs) == 0 {
+		t.log.Debug("telegram notification skipped: notifications are off or not configured", "type", m.Type)
 		return
 	}
 	ev, ok := cfg.Events[m.Type]
 	if !ok || !ev.Enabled {
+		t.log.Debug("telegram notification skipped: event is off", "type", m.Type)
 		return
 	}
 	text := Render(ev.Template, m)
@@ -81,7 +94,7 @@ func (t *Telegram) Notify(m Message) {
 		return
 	}
 	select {
-	case t.queue <- job{cfg: cfg, text: text}:
+	case t.queue <- job{typ: m.Type, cfg: cfg, text: text}:
 	default:
 		t.log.Warn("telegram queue is full, dropping message", "type", m.Type)
 	}
