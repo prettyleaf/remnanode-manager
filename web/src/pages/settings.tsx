@@ -2,10 +2,10 @@ import { useMemo, useState, type ReactNode } from "react"
 import { useSearchParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { CheckCircle2Icon, Loader2Icon, PlusIcon, RotateCcwIcon, SendIcon, Trash2Icon, XCircleIcon } from "lucide-react"
+import { BellOffIcon, CheckCircle2Icon, Loader2Icon, PlusIcon, RotateCcwIcon, SendIcon, Trash2Icon, XCircleIcon } from "lucide-react"
 
 import { PageHeader } from "@/components/app-shell"
-import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -173,6 +173,7 @@ function SettingsForm({ data, tab }: { data: SettingsResponse; tab: string }) {
           draft={draft}
           update={update}
           tokenSaved={data.secrets.botToken}
+          dirty={dirty}
           eventTypes={data.eventTypes}
           defaults={data.defaultTemplates}
         />
@@ -479,14 +480,20 @@ function TelegramCard({
   draft,
   update,
   tokenSaved,
+  dirty,
   eventTypes,
   defaults,
-}: CardProps & { tokenSaved: boolean; eventTypes: string[]; defaults: Record<string, string> }) {
+}: CardProps & { tokenSaved: boolean; dirty: boolean; eventTypes: string[]; defaults: Record<string, string> }) {
   const { t } = useI18n()
   const tg = draft.telegram
   const test = useMutation({
     mutationFn: () => post("/settings/test-telegram", { telegram: fromDraft(draft).telegram }),
-    onSuccess: () => toast.success(t("tg.testSent")),
+    // The test ignores the switch and uses unsaved values, events do not.
+    onSuccess: () => {
+      if (!tg.enabled) toast.warning(t("tg.testSent"), { description: t("tg.testSentOff") })
+      else if (dirty) toast.success(t("tg.testSent"), { description: t("tg.testSentUnsaved") })
+      else toast.success(t("tg.testSent"))
+    },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -499,6 +506,13 @@ function TelegramCard({
         </CardHeader>
         <CardContent className="grid gap-5">
           <SwitchRow id="tg-enabled" label={t("tg.enabled")} checked={tg.enabled} onChange={(v) => update((d) => void (d.telegram.enabled = v))} />
+          {!tg.enabled && (
+            <Alert>
+              <BellOffIcon />
+              <AlertTitle>{t("tg.off")}</AlertTitle>
+              <AlertDescription>{t("tg.offDesc")}</AlertDescription>
+            </Alert>
+          )}
           <Separator />
           <Field label={t("tg.token")} htmlFor="tg-token">
             <Input

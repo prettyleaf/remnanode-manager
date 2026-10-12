@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -339,5 +340,62 @@ func TestPolicyAll(t *testing.T) {
 	c.runCycle(ctx)
 	if !panel.hostDisabled(hostA) {
 		t.Fatal("policy all: host not disabled when every bound node is down")
+	}
+}
+
+func TestDryRunNotifiesTelegram(t *testing.T) {
+	var mu sync.Mutex
+	var texts []string
+	tgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		texts = append(texts, body.Text)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer tgSrv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, panel, clk, _ := setup(t, false, func(s *settings.Settings) {
+		s.Checker.DryRun = true
+		s.Mihomo.Enabled = false
+		s.Telegram.Enabled = true
+		s.Telegram.BotToken = "TOKEN"
+		s.Telegram.ChatIDs = []string{"1"}
+		s.Telegram.APIURL = tgSrv.URL
+	})
+	go c.tg.Run(ctx)
+
+	panel.setNode(nodeA, false)
+	c.runCycle(ctx)
+	clk.advance(6 * time.Minute)
+	c.runCycle(ctx)
+	panel.setNode(nodeA, true)
+	c.runCycle(ctx)
+	clk.advance(3 * time.Minute)
+	c.runCycle(ctx)
+
+	want := []string{"Нода недоступна", "Хосты отключены</b> <i>(тестовый режим)</i>", "Нода снова в сети", "Хосты включены обратно</b> <i>(тестовый режим)</i>"}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		got := slices.Clone(texts)
+		mu.Unlock()
+		if len(got) >= len(want) {
+			for i, w := range want {
+				if !strings.Contains(got[i], w) {
+					t.Fatalf("message %d: %q does not contain %q", i, got[i], w)
+				}
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("got %d messages, want %d: %q", len(got), len(want), got)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

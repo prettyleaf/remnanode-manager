@@ -28,6 +28,7 @@ const eventTypes = [
   "panel_restored",
   "guard_triggered",
   "error",
+  "telegram_failed",
   "login",
   "login_failed",
   "settings_updated",
@@ -44,6 +45,7 @@ function useEventText() {
       if (typeof v === "string" || typeof v === "number") vars[k] = v
     }
     if (typeof meta.downtimeSeconds === "number") vars.downtime = formatDuration(meta.downtimeSeconds * 1000, lang)
+    if (e.type === "telegram_failed" && has(`tg.event.${meta.event}`)) vars.event = t(`tg.event.${meta.event}` as TKey)
 
     let details = ""
     switch (e.type) {
@@ -62,6 +64,7 @@ function useEventText() {
         break
       case "error":
       case "panel_unreachable":
+      case "telegram_failed":
         details = String(meta.error ?? e.message)
         break
     }
