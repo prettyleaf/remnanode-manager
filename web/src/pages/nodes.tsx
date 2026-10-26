@@ -3,6 +3,7 @@ import { toast } from "sonner"
 
 import { PageHeader } from "@/components/app-shell"
 import { NodeStatusBadge } from "@/components/status"
+import { TrafficBar } from "@/components/traffic"
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -17,6 +18,7 @@ export function NodesPage() {
   const qc = useQueryClient()
   const now = useNow()
   const nodes = data?.snapshot.nodes ?? []
+  const threshold = data?.checker.traffic ? data.checker.trafficPercent : undefined
 
   const exclude = useMutation({
     mutationFn: ({ uuid, excluded }: { uuid: string; excluded: boolean }) => post(`/nodes/${uuid}/exclude`, { excluded }),
@@ -38,6 +40,7 @@ export function NodesPage() {
                 <TableHead className="pl-4">{t("nodes.name")}</TableHead>
                 <TableHead>{t("nodes.status")}</TableHead>
                 <TableHead className="hidden sm:table-cell">{t("nodes.since")}</TableHead>
+                <TableHead className="hidden md:table-cell">{t("traffic.column")}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t("nodes.message")}</TableHead>
                 <TableHead className="hidden md:table-cell text-center">{t("nodes.hosts")}</TableHead>
                 <TableHead className="pr-4 text-center">{t("nodes.exclude")}</TableHead>
@@ -46,7 +49,7 @@ export function NodesPage() {
             <TableBody>
               {nodes.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                     {t("nodes.empty")}
                   </TableCell>
                 </TableRow>
@@ -75,6 +78,9 @@ export function NodesPage() {
                         </span>
                       )}
                       {n.status === "up" && up && t("node.upFor", { time: formatDuration(now - up.getTime(), lang) })}
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      <TrafficBar traffic={n.traffic} threshold={threshold} className="w-44" />
                     </TableCell>
                     <TableCell className="hidden max-w-xs truncate text-xs text-muted-foreground lg:table-cell" title={n.lastMessage}>
                       {n.status !== "up" && n.lastMessage ? n.lastMessage : ""}

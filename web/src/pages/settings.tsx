@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { BellOffIcon, CheckCircle2Icon, Loader2Icon, PlusIcon, RotateCcwIcon, SendIcon, Trash2Icon, XCircleIcon } from "lucide-react"
 
 import { PageHeader } from "@/components/app-shell"
+import { TrafficBar } from "@/components/traffic"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,13 +21,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { api, put, post } from "@/lib/api"
 import { useI18n, type TKey } from "@/lib/i18n"
-import { useAuthState, useSettings } from "@/lib/queries"
+import { useAuthState, useSettings, useStatus } from "@/lib/queries"
 import type { PanelInfo, Settings, SettingsResponse, SubscriptionTemplate } from "@/lib/types"
 
 const placeholders: Record<string, string[]> = {
   node_down: ["node", "node_address", "message", "hosts_count", "down_minutes"],
   node_up: ["node", "node_address", "downtime"],
   hosts_disabled: ["hosts", "count", "down_minutes", "dry_run"],
+  traffic_limit: ["hosts", "count", "percent", "dry_run"],
   hosts_enabled: ["hosts", "count", "dry_run"],
   mihomo_updated: ["template", "action", "host"],
   panel_unreachable: ["error"],
@@ -113,6 +115,7 @@ export function SettingsPage() {
         <TabsList className="mb-4 h-auto flex-wrap">
           <TabsTrigger value="panel">{t("settings.tab.panel")}</TabsTrigger>
           <TabsTrigger value="checker">{t("settings.tab.checker")}</TabsTrigger>
+          <TabsTrigger value="traffic">{t("settings.tab.traffic")}</TabsTrigger>
           <TabsTrigger value="mihomo">{t("settings.tab.mihomo")}</TabsTrigger>
           <TabsTrigger value="telegram">{t("settings.tab.telegram")}</TabsTrigger>
           <TabsTrigger value="account">{t("settings.tab.account")}</TabsTrigger>
@@ -164,6 +167,9 @@ function SettingsForm({ data, tab }: { data: SettingsResponse; tab: string }) {
       </TabsContent>
       <TabsContent value="checker">
         <CheckerCard draft={draft} update={update} />
+      </TabsContent>
+      <TabsContent value="traffic">
+        <TrafficCard draft={draft} update={update} />
       </TabsContent>
       <TabsContent value="mihomo">
         <MihomoCard draft={draft} update={update} types={data.templateTypes} />
@@ -387,6 +393,61 @@ function CheckerCard({ draft, update }: CardProps) {
               onChange={(v) => update((d) => void (d.general.eventRetentionDays = v))}
             />
           </Field>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TrafficCard({ draft, update }: CardProps) {
+  const { t } = useI18n()
+  const { data: status } = useStatus()
+  const tr = draft.traffic
+  const nodes = status?.snapshot.nodes ?? []
+  const limited = nodes.filter((n) => n.traffic.limitBytes > 0)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("traffic.title")}</CardTitle>
+        <CardDescription className="leading-relaxed">{t("traffic.desc")}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-5">
+        <SwitchRow
+          id="traffic-enabled"
+          label={t("traffic.enabled")}
+          hint={t("traffic.enabledHint")}
+          checked={tr.enabled}
+          onChange={(v) => update((d) => void (d.traffic.enabled = v))}
+        />
+        <Separator />
+        <Field label={t("traffic.percent")} hint={t("traffic.percentHint")} htmlFor="traffic-percent">
+          <NumberInput
+            id="traffic-percent"
+            min={1}
+            max={100}
+            value={tr.disablePercent}
+            onChange={(v) => update((d) => void (d.traffic.disablePercent = v))}
+          />
+        </Field>
+        <Separator />
+        <div className="grid gap-2">
+          <Label>{t("traffic.nodes")}</Label>
+          {limited.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t("traffic.nodesEmpty")}</p>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">{t("traffic.nodesCount", { count: limited.length, total: nodes.length })}</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {limited.map((n) => (
+                  <div key={n.uuid} className="rounded-md border px-3 py-2">
+                    <div className="mb-1.5 truncate text-sm font-medium">{n.name}</div>
+                    <TrafficBar traffic={n.traffic} threshold={tr.enabled ? tr.disablePercent : undefined} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </CardContent>
     </Card>

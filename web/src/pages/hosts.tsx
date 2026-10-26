@@ -127,7 +127,12 @@ export function HostsPage() {
                               key={id}
                               variant="outline"
                               className={
-                                "font-normal " + (n?.status === "down" ? "border-red-500/40 text-red-600 dark:text-red-400" : "")
+                                "font-normal " +
+                                (n?.status === "down"
+                                  ? "border-red-500/40 text-red-600 dark:text-red-400"
+                                  : n?.traffic.overLimit
+                                    ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                    : "")
                               }
                             >
                               {n?.name ?? id.slice(0, 8)}
@@ -139,6 +144,7 @@ export function HostsPage() {
                     <TableCell>
                       <div className="flex flex-col items-start gap-1">
                         <HostStateBadge state={h.state} />
+                        {h.reason === "traffic" && <span className="text-xs text-muted-foreground">{t("reason.traffic")}</span>}
                         {h.state === "at_risk" && disableAt && (
                           <span className="text-xs text-amber-600 dark:text-amber-400">
                             {disableAt.getTime() > now

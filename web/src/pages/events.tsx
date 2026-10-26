@@ -34,6 +34,12 @@ const eventTypes = [
   "settings_updated",
 ]
 
+const enableReasons: Record<string, TKey> = {
+  manual: "ev.enableReason.manual",
+  "nodes recovered": "ev.enableReason.recovered",
+  "traffic below limit": "ev.enableReason.traffic",
+}
+
 function useEventText() {
   const { t, has, lang } = useI18n()
   return (e: AppEvent): { title: string; details: string } => {
@@ -52,6 +58,10 @@ function useEventText() {
       case "host_disabled":
       case "dry_run_disable":
         details = Array.isArray(meta.nodes) ? (meta.nodes as string[]).join(", ") : ""
+        if (meta.reason === "traffic") details = t("ev.trafficDetails", { percent: String(meta.percent ?? "") }) + (details ? ` · ${details}` : "")
+        break
+      case "host_enabled":
+        details = meta.reason ? t(enableReasons[String(meta.reason)] ?? "ev.enableReason.recovered") : ""
         break
       case "node_down":
         details = String(meta.message ?? "")
@@ -73,6 +83,7 @@ function useEventText() {
 }
 
 const levelColor = { info: "blue", warn: "amber", error: "red" } as const
+
 
 export function EventsPage() {
   const { t, lang } = useI18n()

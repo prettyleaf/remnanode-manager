@@ -332,6 +332,13 @@ const (
 	HostStateOverridden = "overridden"
 )
 
+// Why a host was disabled. "nodes down" predates the constant and is kept
+// so existing records keep their meaning.
+const (
+	ReasonNodesDown = "nodes down"
+	ReasonTraffic   = "traffic"
+)
+
 type TemplatePatch struct {
 	TemplateUUID string       `json:"templateUuid"`
 	TemplateName string       `json:"templateName"`

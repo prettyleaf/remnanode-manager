@@ -11,7 +11,18 @@ export interface NodeView {
   upSince: string | null
   lastMessage: string
   hosts: string[]
+  traffic: NodeTraffic
 }
+
+export interface NodeTraffic {
+  usedBytes: number
+  /** 0 when the node has no limit or traffic tracking is off in the panel. */
+  limitBytes: number
+  resetDay?: number | null
+  overLimit: boolean
+}
+
+export type DisableReason = "nodes down" | "traffic"
 
 export type HostState =
   | "ok"
@@ -34,6 +45,7 @@ export interface HostView {
   tags: string[]
   excluded: boolean
   state: HostState
+  reason?: DisableReason
   disableAt?: string
 }
 
@@ -51,7 +63,7 @@ export interface ManagedHost {
   remark: string
   nodes: string[]
   state: "disabled" | "dry_run" | "overridden"
-  reason: string
+  reason: DisableReason
   disabledAt: string
   mihomo: TemplatePatch[] | null
 }
@@ -65,6 +77,7 @@ export interface Stats {
   hostsBound: number
   hostsManaged: number
   hostsAtRisk: number
+  nodesOverLimit: number
 }
 
 export interface Snapshot {
@@ -91,6 +104,8 @@ export interface StatusResponse {
     recoveryMinutes: number
     intervalSeconds: number
     autoEnable: boolean
+    traffic: boolean
+    trafficPercent: number
     mihomo: boolean
     telegram: boolean
     configured: boolean
@@ -121,6 +136,10 @@ export interface Settings {
     massDownGuardPercent: number
     excludedNodes: string[]
     excludedHosts: string[]
+  }
+  traffic: {
+    enabled: boolean
+    disablePercent: number
   }
   mihomo: {
     enabled: boolean

@@ -18,6 +18,27 @@ type Node struct {
 	LastStatusChange  *time.Time `json:"lastStatusChange"`
 	LastStatusMessage *string    `json:"lastStatusMessage"`
 	Tags              []string   `json:"tags"`
+	// Traffic accounting configured on the node in the panel. The limit only
+	// applies while tracking is active; the panel resets usage on the reset day.
+	IsTrafficTrackingActive bool     `json:"isTrafficTrackingActive"`
+	TrafficLimitBytes       *float64 `json:"trafficLimitBytes"`
+	TrafficUsedBytes        *float64 `json:"trafficUsedBytes"`
+	TrafficResetDay         *int     `json:"trafficResetDay"`
+}
+
+// TrafficLimit returns the node's traffic limit, or 0 when it has none.
+func (n Node) TrafficLimit() int64 {
+	if !n.IsTrafficTrackingActive || n.TrafficLimitBytes == nil || *n.TrafficLimitBytes <= 0 {
+		return 0
+	}
+	return int64(*n.TrafficLimitBytes)
+}
+
+func (n Node) TrafficUsed() int64 {
+	if n.TrafficUsedBytes == nil || *n.TrafficUsedBytes < 0 {
+		return 0
+	}
+	return int64(*n.TrafficUsedBytes)
 }
 
 type HostInbound struct {

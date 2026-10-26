@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -213,7 +215,11 @@ func (c *Checker) evaluate(ctx context.Context, client *remnawave.Client, cfg se
 		return err
 	}
 
-	ev := evaluator{cfg: cfg.Checker, states: states, excluded: excludedNodes, now: now}
+	usage := make(map[string]trafficUsage, len(nodes))
+	for _, n := range nodes {
+		usage[n.UUID] = trafficUsage{used: n.TrafficUsed(), limit: n.TrafficLimit()}
+	}
+	ev := evaluator{cfg: cfg.Checker, traffic: cfg.Traffic, states: states, usage: usage, excluded: excludedNodes, now: now}
 	managed, err := c.store.ManagedHosts(ctx)
 	if err != nil {
 		return err
@@ -230,7 +236,7 @@ func (c *Checker) evaluate(ctx context.Context, client *remnawave.Client, cfg se
 			continue
 		}
 		if ev.failed(bound) {
-			toDisable = append(toDisable, candidate{host: h, nodes: bound})
+			toDisable = append(toDisable, candidate{host: h, nodes: bound, reason: ev.reason(bound)})
 		}
 	}
 
@@ -243,7 +249,11 @@ func (c *Checker) evaluate(ctx context.Context, client *remnawave.Client, cfg se
 
 	if len(toDisable) > 0 && cfg.Checker.Enabled {
 		if guardActive {
-			if !c.guardNotified {
+			// The guard is about outages; a traffic limit is reached by one
+			// node at a time and is never a symptom of panel trouble.
+			n := len(toDisable)
+			toDisable = slices.DeleteFunc(toDisable, func(cand candidate) bool { return cand.reason == store.ReasonNodesDown })
+			if len(toDisable) < n && !c.guardNotified {
 				c.guardNotified = true
 				percent := down * 100 / total
 				c.event(ctx, store.Event{Level: "warn", Type: "guard_triggered",
@@ -253,8 +263,9 @@ func (c *Checker) evaluate(ctx context.Context, client *remnawave.Client, cfg se
 					"down_nodes": fmt.Sprint(down), "total_nodes": fmt.Sprint(total), "percent": fmt.Sprint(percent),
 				}})
 			}
-		} else {
-			disabled := c.disableHosts(ctx, client, cfg, toDisable, hosts, states)
+		}
+		if len(toDisable) > 0 {
+			disabled := c.disableHosts(ctx, client, cfg, toDisable, hosts, ev)
 			setDisabled(hosts, disabled, true)
 		}
 	}
@@ -311,11 +322,15 @@ func (c *Checker) evaluate(ctx context.Context, client *remnawave.Client, cfg se
 			}
 			if cfg.Checker.Enabled && cfg.Checker.AutoEnable && len(bound) > 0 && ev.recovered(bound) {
 				toEnable = append(toEnable, m)
+			} else if ev.failed(bound) && ev.reason(bound) != m.Reason {
+				// E.g. the node came back online but has no traffic left.
+				m.Reason = ev.reason(bound)
+				_ = c.store.SaveManagedHost(ctx, m)
 			}
 		}
 	}
 	if len(toEnable) > 0 {
-		if err := c.enableHosts(ctx, client, toEnable, "nodes recovered"); err != nil {
+		if err := c.enableHosts(ctx, client, toEnable, false); err != nil {
 			c.log.Warn("enable hosts failed", "err", err)
 		} else {
 			enabled := map[string]bool{}
@@ -335,8 +350,9 @@ func (c *Checker) evaluate(ctx context.Context, client *remnawave.Client, cfg se
 }
 
 type candidate struct {
-	host  remnawave.Host
-	nodes []string
+	host   remnawave.Host
+	nodes  []string
+	reason string
 }
 
 func classify(n remnawave.Node, disabledAsDown bool) string {
@@ -351,9 +367,29 @@ func classify(n remnawave.Node, disabledAsDown bool) string {
 
 type evaluator struct {
 	cfg      settings.Checker
+	traffic  settings.Traffic
 	states   map[string]*store.NodeState
+	usage    map[string]trafficUsage
 	excluded map[string]bool
 	now      time.Time
+}
+
+// trafficUsage is a node's traffic counter against its panel limit;
+// limit is 0 when the node has none.
+type trafficUsage struct {
+	used, limit int64
+}
+
+func (u trafficUsage) percent() int64 {
+	if u.limit <= 0 {
+		return 0
+	}
+	return u.used * 100 / u.limit
+}
+
+// String renders usage for Telegram messages.
+func (u trafficUsage) String() string {
+	return fmt.Sprintf("%d%% · %s / %s", u.percent(), FormatBytes(u.used), FormatBytes(u.limit))
 }
 
 // bound returns the host's nodes that take part in decisions: existing,
@@ -382,18 +418,48 @@ func (e evaluator) upLongEnough(id string) bool {
 		e.now.Sub(*st.UpSince) >= time.Duration(e.cfg.RecoveryMinutes)*time.Minute
 }
 
-func (e evaluator) failed(nodes []string) bool {
+// overLimit reports whether the node used up the configured share of its
+// traffic limit. Nodes without a limit never reach it.
+func (e evaluator) overLimit(id string) bool {
+	u := e.usage[id]
+	return e.traffic.Enabled && u.limit > 0 && u.used*100 >= u.limit*int64(e.traffic.DisablePercent)
+}
+
+// unavailable: the node cannot serve the host, because it is down or out of traffic.
+func (e evaluator) unavailable(id string) bool {
+	return e.downLongEnough(id) || e.overLimit(id)
+}
+
+func (e evaluator) available(id string) bool {
+	return e.upLongEnough(id) && !e.overLimit(id)
+}
+
+// matches applies the host policy to a node condition: with "all" every
+// bound node must meet it, with "any" a single one is enough.
+func (e evaluator) matches(nodes []string, fn func(string) bool) bool {
 	if e.cfg.Policy == settings.PolicyAny {
-		return slices.ContainsFunc(nodes, e.downLongEnough)
+		return slices.ContainsFunc(nodes, fn)
 	}
-	return len(nodes) > 0 && !slices.ContainsFunc(nodes, func(id string) bool { return !e.downLongEnough(id) })
+	return len(nodes) > 0 && !slices.ContainsFunc(nodes, func(id string) bool { return !fn(id) })
+}
+
+func (e evaluator) failed(nodes []string) bool {
+	return e.matches(nodes, e.unavailable)
+}
+
+// reason tells whether the traffic limit alone is enough to fail the host.
+func (e evaluator) reason(nodes []string) string {
+	if e.matches(nodes, e.overLimit) {
+		return store.ReasonTraffic
+	}
+	return store.ReasonNodesDown
 }
 
 func (e evaluator) recovered(nodes []string) bool {
 	if e.cfg.Policy == settings.PolicyAny {
-		return len(nodes) > 0 && !slices.ContainsFunc(nodes, func(id string) bool { return !e.upLongEnough(id) })
+		return len(nodes) > 0 && !slices.ContainsFunc(nodes, func(id string) bool { return !e.available(id) })
 	}
-	return slices.ContainsFunc(nodes, e.upLongEnough)
+	return slices.ContainsFunc(nodes, e.available)
 }
 
 // disableAt predicts when a host bound to these nodes will be disabled.
@@ -402,13 +468,14 @@ func (e evaluator) disableAt(nodes []string) *time.Time {
 	var times []time.Time
 	for _, id := range nodes {
 		st := e.states[id]
-		if st == nil || st.Status != StatusDown || st.DownSince == nil {
-			if e.cfg.Policy == settings.PolicyAll {
-				return nil
-			}
-			continue
+		switch {
+		case e.overLimit(id):
+			times = append(times, e.now)
+		case st != nil && st.Status == StatusDown && st.DownSince != nil:
+			times = append(times, st.DownSince.Add(grace))
+		case e.cfg.Policy == settings.PolicyAll:
+			return nil
 		}
-		times = append(times, st.DownSince.Add(grace))
 	}
 	if len(times) == 0 {
 		return nil
@@ -438,37 +505,56 @@ func (e evaluator) downRatio() (down, total int) {
 const dryRunMark = " <i>(тестовый режим)</i>"
 
 // disableHosts returns the UUIDs that were actually disabled in the panel.
-func (c *Checker) disableHosts(ctx context.Context, client *remnawave.Client, cfg settings.Settings, list []candidate, allHosts []remnawave.Host, states map[string]*store.NodeState) map[string]bool {
+func (c *Checker) disableHosts(ctx context.Context, client *remnawave.Client, cfg settings.Settings, list []candidate, allHosts []remnawave.Host, ev evaluator) map[string]bool {
 	nodeNames := func(ids []string) []string {
 		out := make([]string, 0, len(ids))
 		for _, id := range ids {
-			if st := states[id]; st != nil {
+			if st := ev.states[id]; st != nil {
 				out = append(out, st.Name)
 			}
 		}
 		return out
 	}
+	// Telegram lines show how much traffic the nodes over the limit used.
+	lines := map[string][]string{}
+	addLine := func(m *store.ManagedHost) {
+		names := make([]string, 0, len(m.Nodes))
+		for _, id := range m.Nodes {
+			st := ev.states[id]
+			if st == nil {
+				continue
+			}
+			if m.Reason == store.ReasonTraffic && ev.overLimit(id) {
+				names = append(names, fmt.Sprintf("%s (%s)", st.Name, ev.usage[id]))
+			} else {
+				names = append(names, st.Name)
+			}
+		}
+		lines[m.Reason] = append(lines[m.Reason], hostLine(m.Remark, names))
+	}
+	eventMeta := func(m *store.ManagedHost, names []string) map[string]any {
+		meta := map[string]any{"host": m.Remark, "nodes": names, "reason": m.Reason}
+		if m.Reason == store.ReasonTraffic {
+			meta["percent"] = cfg.Traffic.DisablePercent
+		}
+		return meta
+	}
 
-	var lines []string
 	if cfg.Checker.DryRun {
 		for _, cand := range list {
 			m := &store.ManagedHost{UUID: cand.host.UUID, Remark: cand.host.Remark, Nodes: cand.nodes,
-				State: store.HostStateDryRun, Reason: "nodes down", DisabledAt: time.Now()}
+				State: store.HostStateDryRun, Reason: cand.reason, DisabledAt: time.Now()}
 			if err := c.store.SaveManagedHost(ctx, m); err != nil {
 				c.log.Error("save managed host", "err", err)
 				continue
 			}
 			names := nodeNames(cand.nodes)
-			lines = append(lines, hostLine(cand.host.Remark, names))
+			addLine(m)
 			c.event(ctx, store.Event{Level: "warn", Type: "dry_run_disable", HostUUID: m.UUID,
-				Message: fmt.Sprintf("[dry run] Host %q would be disabled (nodes: %s)", m.Remark, strings.Join(names, ", ")),
-				Meta:    map[string]any{"host": m.Remark, "nodes": names}})
+				Message: fmt.Sprintf("[dry run] Host %q would be disabled (%s, nodes: %s)", m.Remark, m.Reason, strings.Join(names, ", ")),
+				Meta:    eventMeta(m, names)})
 		}
-		if len(lines) > 0 {
-			c.tg.Notify(notify.Message{Type: settings.EventHostsDisabled,
-				HTML: map[string]string{"hosts": strings.Join(lines, "\n"), "dry_run": dryRunMark},
-				Text: map[string]string{"down_minutes": fmt.Sprint(cfg.Checker.DownMinutes), "count": fmt.Sprint(len(lines))}})
-		}
+		c.notifyDisabled(cfg, lines, dryRunMark)
 		return nil
 	}
 
@@ -480,7 +566,7 @@ func (c *Checker) disableHosts(ctx context.Context, client *remnawave.Client, cf
 	var records []*store.ManagedHost
 	for _, cand := range list {
 		m := &store.ManagedHost{UUID: cand.host.UUID, Remark: cand.host.Remark, Nodes: cand.nodes,
-			State: store.HostStateDisabled, Reason: "nodes down", DisabledAt: time.Now(), Mihomo: []store.TemplatePatch{}}
+			State: store.HostStateDisabled, Reason: cand.reason, DisabledAt: time.Now(), Mihomo: []store.TemplatePatch{}}
 		if cfg.Mihomo.Enabled {
 			m.Mihomo = c.removeFromTemplates(ctx, client, cfg, cand.host, allHosts, disabling)
 		}
@@ -512,20 +598,36 @@ func (c *Checker) disableHosts(ctx context.Context, client *remnawave.Client, cf
 
 	for _, m := range records {
 		names := nodeNames(m.Nodes)
-		lines = append(lines, hostLine(m.Remark, names))
-		c.event(ctx, store.Event{Level: "warn", Type: "host_disabled", HostUUID: m.UUID,
-			Message: fmt.Sprintf("Host %q disabled: nodes %s are down for more than %d min", m.Remark, strings.Join(names, ", "), cfg.Checker.DownMinutes),
-			Meta:    map[string]any{"host": m.Remark, "nodes": names, "minutes": cfg.Checker.DownMinutes}})
+		addLine(m)
+		meta := eventMeta(m, names)
+		msg := fmt.Sprintf("Host %q disabled: nodes %s used %d%% of their traffic limit", m.Remark, strings.Join(names, ", "), cfg.Traffic.DisablePercent)
+		if m.Reason != store.ReasonTraffic {
+			msg = fmt.Sprintf("Host %q disabled: nodes %s are down for more than %d min", m.Remark, strings.Join(names, ", "), cfg.Checker.DownMinutes)
+			meta["minutes"] = cfg.Checker.DownMinutes
+		}
+		c.event(ctx, store.Event{Level: "warn", Type: "host_disabled", HostUUID: m.UUID, Message: msg, Meta: meta})
 	}
-	c.tg.Notify(notify.Message{Type: settings.EventHostsDisabled,
-		HTML: map[string]string{"hosts": strings.Join(lines, "\n"), "dry_run": ""},
-		Text: map[string]string{"down_minutes": fmt.Sprint(cfg.Checker.DownMinutes), "count": fmt.Sprint(len(records))}})
+	c.notifyDisabled(cfg, lines, "")
 
 	disabled := make(map[string]bool, len(records))
 	for _, m := range records {
 		disabled[m.UUID] = true
 	}
 	return disabled
+}
+
+// notifyDisabled sends one Telegram message per disable reason.
+func (c *Checker) notifyDisabled(cfg settings.Settings, lines map[string][]string, dryRun string) {
+	if l := lines[store.ReasonNodesDown]; len(l) > 0 {
+		c.tg.Notify(notify.Message{Type: settings.EventHostsDisabled,
+			HTML: map[string]string{"hosts": strings.Join(l, "\n"), "dry_run": dryRun},
+			Text: map[string]string{"down_minutes": fmt.Sprint(cfg.Checker.DownMinutes), "count": fmt.Sprint(len(l))}})
+	}
+	if l := lines[store.ReasonTraffic]; len(l) > 0 {
+		c.tg.Notify(notify.Message{Type: settings.EventTrafficLimit,
+			HTML: map[string]string{"hosts": strings.Join(l, "\n"), "dry_run": dryRun},
+			Text: map[string]string{"percent": fmt.Sprint(cfg.Traffic.DisablePercent), "count": fmt.Sprint(len(l))}})
+	}
 }
 
 // setDisabled mirrors panel changes made during a cycle into the fetched list.
@@ -537,7 +639,7 @@ func setDisabled(hosts []remnawave.Host, ids map[string]bool, disabled bool) {
 	}
 }
 
-func (c *Checker) enableHosts(ctx context.Context, client *remnawave.Client, list []*store.ManagedHost, reason string) error {
+func (c *Checker) enableHosts(ctx context.Context, client *remnawave.Client, list []*store.ManagedHost, manual bool) error {
 	uuids := make([]string, 0, len(list))
 	for _, m := range list {
 		uuids = append(uuids, m.UUID)
@@ -553,6 +655,14 @@ func (c *Checker) enableHosts(ctx context.Context, client *remnawave.Client, lis
 			c.log.Error("delete managed host", "err", err)
 		}
 		lines = append(lines, hostLine(m.Remark, nil))
+		reason := "manual"
+		switch {
+		case manual:
+		case m.Reason == store.ReasonTraffic:
+			reason = "traffic below limit"
+		default:
+			reason = "nodes recovered"
+		}
 		c.event(ctx, store.Event{Level: "info", Type: "host_enabled", HostUUID: m.UUID,
 			Message: fmt.Sprintf("Host %q enabled (%s)", m.Remark, reason),
 			Meta:    map[string]any{"host": m.Remark, "reason": reason}})
@@ -677,7 +787,7 @@ func (c *Checker) EnableNow(ctx context.Context, uuid string) error {
 	if err != nil {
 		return err
 	}
-	return c.enableHosts(ctx, client, []*store.ManagedHost{m}, "manual")
+	return c.enableHosts(ctx, client, []*store.ManagedHost{m}, true)
 }
 
 // Forget stops tracking a host and leaves it as it is in the panel.
@@ -786,4 +896,18 @@ func FormatDuration(d time.Duration) string {
 		parts = append(parts, fmt.Sprintf("%d мин", mins))
 	}
 	return strings.Join(parts, " ")
+}
+
+// FormatBytes renders a byte count in Russian with binary units, the way the
+// panel counts node traffic.
+func FormatBytes(b int64) string {
+	units := []string{"Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"}
+	v := float64(b)
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	num := strconv.FormatFloat(math.Round(v*10)/10, 'f', -1, 64)
+	return strings.Replace(num, ".", ",", 1) + " " + units[i]
 }

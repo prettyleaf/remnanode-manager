@@ -33,19 +33,29 @@ type Stats struct {
 	HostsBound    int `json:"hostsBound"`
 	HostsManaged  int `json:"hostsManaged"`
 	HostsAtRisk   int `json:"hostsAtRisk"`
+	// Nodes whose hosts are taken down by the traffic limit.
+	NodesOverLimit int `json:"nodesOverLimit"`
 }
 
 type NodeView struct {
-	UUID        string     `json:"uuid"`
-	Name        string     `json:"name"`
-	Address     string     `json:"address"`
-	CountryCode string     `json:"countryCode"`
-	Status      string     `json:"status"`
-	Excluded    bool       `json:"excluded"`
-	DownSince   *time.Time `json:"downSince"`
-	UpSince     *time.Time `json:"upSince"`
-	LastMessage string     `json:"lastMessage"`
-	Hosts       []string   `json:"hosts"`
+	UUID        string      `json:"uuid"`
+	Name        string      `json:"name"`
+	Address     string      `json:"address"`
+	CountryCode string      `json:"countryCode"`
+	Status      string      `json:"status"`
+	Excluded    bool        `json:"excluded"`
+	DownSince   *time.Time  `json:"downSince"`
+	UpSince     *time.Time  `json:"upSince"`
+	LastMessage string      `json:"lastMessage"`
+	Hosts       []string    `json:"hosts"`
+	Traffic     TrafficView `json:"traffic"`
+}
+
+type TrafficView struct {
+	UsedBytes  int64 `json:"usedBytes"`
+	LimitBytes int64 `json:"limitBytes"`
+	ResetDay   *int  `json:"resetDay,omitempty"`
+	OverLimit  bool  `json:"overLimit"`
 }
 
 const (
@@ -70,6 +80,7 @@ type HostView struct {
 	Tags       []string   `json:"tags"`
 	Excluded   bool       `json:"excluded"`
 	State      string     `json:"state"`
+	Reason     string     `json:"reason,omitempty"`
 	DisableAt  *time.Time `json:"disableAt,omitempty"`
 }
 
@@ -106,6 +117,13 @@ func (c *Checker) buildSnapshot(cfg settings.Settings, nodes []remnawave.Node, h
 		if v.Hosts == nil {
 			v.Hosts = []string{}
 		}
+		v.Traffic = TrafficView{UsedBytes: n.TrafficUsed(), LimitBytes: n.TrafficLimit(), OverLimit: ev.overLimit(n.UUID)}
+		if v.Traffic.LimitBytes > 0 {
+			v.Traffic.ResetDay = n.TrafficResetDay
+		}
+		if v.Traffic.OverLimit && !v.Excluded {
+			snap.Stats.NodesOverLimit++
+		}
 		if st != nil {
 			v.Status, v.DownSince, v.UpSince, v.LastMessage = st.Status, st.DownSince, st.UpSince, st.LastMessage
 		}
@@ -134,7 +152,11 @@ func (c *Checker) buildSnapshot(cfg settings.Settings, nodes []remnawave.Node, h
 		if len(h.Nodes) > 0 {
 			snap.Stats.HostsBound++
 		}
-		switch m := managed[h.UUID]; {
+		m := managed[h.UUID]
+		if m != nil {
+			v.Reason = m.Reason
+		}
+		switch {
 		case m != nil && m.State == store.HostStateDisabled:
 			v.State = HostManaged
 		case m != nil && m.State == store.HostStateDryRun:

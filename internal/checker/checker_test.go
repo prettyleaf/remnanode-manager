@@ -51,11 +51,18 @@ type fakePanel struct {
 	template  string
 	legacy    bool
 	bulkCalls []string
+	traffic   map[string]*nodeTraffic
+}
+
+type nodeTraffic struct {
+	tracking    bool
+	used, limit float64
 }
 
 func newFakePanel(legacy bool) *fakePanel {
 	p := &fakePanel{
 		nodes:    map[string]bool{nodeA: true, nodeB: true},
+		traffic:  map[string]*nodeTraffic{},
 		template: tplYAML,
 		legacy:   legacy,
 		hosts: map[string]map[string]any{
@@ -91,8 +98,13 @@ func (p *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/nodes":
 		out := []map[string]any{}
 		for id, ok := range p.nodes {
-			out = append(out, map[string]any{"uuid": id, "name": "node-" + id[:1], "address": "1.1.1.1",
-				"isConnected": ok, "isDisabled": false, "isConnecting": false, "lastStatusMessage": "connection refused"})
+			n := map[string]any{"uuid": id, "name": "node-" + id[:1], "address": "1.1.1.1",
+				"isConnected": ok, "isDisabled": false, "isConnecting": false, "lastStatusMessage": "connection refused",
+				"isTrafficTrackingActive": false, "trafficLimitBytes": nil, "trafficUsedBytes": 0, "trafficResetDay": nil}
+			if tr := p.traffic[id]; tr != nil {
+				n["isTrafficTrackingActive"], n["trafficUsedBytes"], n["trafficLimitBytes"], n["trafficResetDay"] = tr.tracking, tr.used, tr.limit, 1
+			}
+			out = append(out, n)
 		}
 		reply(out)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/hosts":
@@ -140,6 +152,12 @@ func (p *fakePanel) setNode(id string, up bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.nodes[id] = up
+}
+
+func (p *fakePanel) setTraffic(id string, tracking bool, used, limit float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.traffic[id] = &nodeTraffic{tracking: tracking, used: used, limit: limit}
 }
 
 func (p *fakePanel) tpl() string {
@@ -397,5 +415,135 @@ func TestDryRunNotifiesTelegram(t *testing.T) {
 			t.Fatalf("got %d messages, want %d: %q", len(got), len(want), got)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestTrafficLimit(t *testing.T) {
+	ctx := context.Background()
+	c, panel, clk, st := setup(t, false, func(s *settings.Settings) {
+		s.Traffic.Enabled = true
+		s.Traffic.DisablePercent = 90
+		// One of two nodes down trips the guard; traffic must not be held by it.
+		s.Checker.MassDownGuardPercent = 50
+	})
+	var tb float64 = 1 << 40
+
+	panel.setTraffic(nodeA, true, 0.89*tb, tb)
+	panel.setNode(nodeB, false)
+	c.runCycle(ctx)
+	clk.advance(6 * time.Minute)
+	c.runCycle(ctx)
+	if panel.hostDisabled(hostA) {
+		t.Fatal("host disabled below the traffic threshold")
+	}
+	if panel.hostDisabled(hostB) {
+		t.Fatal("guard did not hold the host of the down node")
+	}
+
+	panel.setTraffic(nodeA, true, 0.91*tb, tb)
+	c.runCycle(ctx)
+	if !panel.hostDisabled(hostA) {
+		t.Fatal("host not disabled after its node reached the traffic threshold")
+	}
+	if panel.hostDisabled(hostB) || !panel.hostDisabled(hostC) {
+		t.Fatal("unrelated hosts changed")
+	}
+	if strings.Contains(panel.tpl(), "- 🇩🇪 DE\n") {
+		t.Fatalf("template still references the host:\n%s", panel.tpl())
+	}
+	m, err := st.ManagedHost(ctx, hostA)
+	if err != nil || m.Reason != store.ReasonTraffic {
+		t.Fatalf("expected traffic record, got %+v %v", m, err)
+	}
+	snap := c.Snapshot()
+	if snap.Stats.NodesOverLimit != 1 {
+		t.Fatalf("expected one node over the limit: %+v", snap.Stats)
+	}
+	for _, n := range snap.Nodes {
+		if n.UUID == nodeA && (!n.Traffic.OverLimit || n.Traffic.LimitBytes != int64(tb) || n.Traffic.UsedBytes != int64(0.91*tb)) {
+			t.Fatalf("unexpected traffic view: %+v", n.Traffic)
+		}
+	}
+
+	// The panel resets usage on the reset day: the node has been up all
+	// along, so the host comes back on the next check.
+	panel.setTraffic(nodeA, true, 0, tb)
+	c.runCycle(ctx)
+	if panel.hostDisabled(hostA) {
+		t.Fatal("host not re-enabled after the traffic reset")
+	}
+	if panel.tpl() != tplYAML {
+		t.Fatalf("template not restored exactly:\n%s", panel.tpl())
+	}
+	events, _ := st.Events(ctx, store.EventFilter{Type: "host_enabled"})
+	if len(events) != 1 || events[0].Meta["reason"] != "traffic below limit" {
+		t.Fatalf("unexpected enable events: %+v", events)
+	}
+}
+
+func TestTrafficLimitIgnored(t *testing.T) {
+	ctx := context.Background()
+	c, panel, _, _ := setup(t, false, func(s *settings.Settings) { s.Mihomo.Enabled = false })
+
+	// Feature off: a node past its limit keeps its hosts.
+	panel.setTraffic(nodeA, true, 2, 1)
+	c.runCycle(ctx)
+	if panel.hostDisabled(hostA) {
+		t.Fatal("host disabled while traffic limits are off")
+	}
+
+	cfg := c.store.Settings()
+	cfg.Traffic.Enabled = true
+	if err := c.store.SaveSettings(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Tracking off in the panel: the limit does not apply.
+	panel.setTraffic(nodeA, false, 2, 1)
+	c.runCycle(ctx)
+	if panel.hostDisabled(hostA) {
+		t.Fatal("host disabled although the panel does not track the node's traffic")
+	}
+
+	panel.setTraffic(nodeA, true, 2, 1)
+	c.runCycle(ctx)
+	if !panel.hostDisabled(hostA) {
+		t.Fatal("host not disabled once tracking was turned on")
+	}
+}
+
+func TestReasonFollowsNodes(t *testing.T) {
+	ctx := context.Background()
+	c, panel, clk, st := setup(t, false, func(s *settings.Settings) {
+		s.Mihomo.Enabled = false
+		s.Traffic.Enabled = true
+	})
+
+	panel.setNode(nodeA, false)
+	c.runCycle(ctx)
+	clk.advance(6 * time.Minute)
+	c.runCycle(ctx)
+	if m, err := st.ManagedHost(ctx, hostA); err != nil || m.Reason != store.ReasonNodesDown {
+		t.Fatalf("expected nodes-down record, got %+v %v", m, err)
+	}
+
+	// The node is back but has no traffic left: the host stays off.
+	panel.setNode(nodeA, true)
+	panel.setTraffic(nodeA, true, 100, 100)
+	c.runCycle(ctx)
+	clk.advance(3 * time.Minute)
+	c.runCycle(ctx)
+	if !panel.hostDisabled(hostA) {
+		t.Fatal("host re-enabled while its node is out of traffic")
+	}
+	if m, err := st.ManagedHost(ctx, hostA); err != nil || m.Reason != store.ReasonTraffic {
+		t.Fatalf("expected the reason to switch to traffic, got %+v %v", m, err)
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	for in, want := range map[int64]string{0: "0 Б", 1536: "1,5 КБ", 1 << 40: "1 ТБ", 960 << 30: "960 ГБ"} {
+		if got := FormatBytes(in); got != want {
+			t.Errorf("FormatBytes(%d) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -23,6 +23,7 @@ const (
 	EventPanelUnreachable = "panel_unreachable"
 	EventPanelRestored    = "panel_restored"
 	EventGuardTriggered   = "guard_triggered"
+	EventTrafficLimit     = "traffic_limit"
 	EventError            = "error"
 )
 
@@ -30,6 +31,7 @@ var EventTypes = []string{
 	EventNodeDown,
 	EventNodeUp,
 	EventHostsDisabled,
+	EventTrafficLimit,
 	EventHostsEnabled,
 	EventMihomoUpdated,
 	EventPanelUnreachable,
@@ -59,6 +61,13 @@ type Checker struct {
 	MassDownGuardPercent    int      `json:"massDownGuardPercent"`
 	ExcludedNodes           []string `json:"excludedNodes"`
 	ExcludedHosts           []string `json:"excludedHosts"`
+}
+
+// Traffic disables hosts of nodes that used up DisablePercent of the traffic
+// limit set on the node in the panel.
+type Traffic struct {
+	Enabled        bool `json:"enabled"`
+	DisablePercent int  `json:"disablePercent"`
 }
 
 type Mihomo struct {
@@ -92,6 +101,7 @@ type General struct {
 type Settings struct {
 	Panel    Panel    `json:"panel"`
 	Checker  Checker  `json:"checker"`
+	Traffic  Traffic  `json:"traffic"`
 	Mihomo   Mihomo   `json:"mihomo"`
 	Telegram Telegram `json:"telegram"`
 	General  General  `json:"general"`
@@ -106,6 +116,7 @@ var DefaultTemplates = map[string]string{
 	EventPanelUnreachable: "🚨 <b>Панель Remnawave недоступна</b>\n\n{error}",
 	EventPanelRestored:    "🟢 <b>Связь с панелью восстановлена</b>\n\nВерсия: {version}",
 	EventGuardTriggered:   "🛡 <b>Сработала защита от массового отключения</b>\n\nНедоступно нод: {down_nodes} из {total_nodes} ({percent}%). Хосты не отключаются.",
+	EventTrafficLimit:     "📊 <b>Хосты отключены по трафику</b>{dry_run}\n\n{hosts}\n\nПричина: ноды израсходовали {percent}% лимита трафика.",
 	EventError:            "❗ <b>Ошибка</b>\n\n{error}",
 }
 
@@ -126,6 +137,7 @@ func Default() Settings {
 			ExcludedNodes:   []string{},
 			ExcludedHosts:   []string{},
 		},
+		Traffic: Traffic{DisablePercent: 95},
 		Mihomo: Mihomo{
 			Enabled:            false,
 			TemplateTypes:      []string{"MIHOMO"},
@@ -163,6 +175,9 @@ func (s *Settings) FillDefaults() {
 	}
 	if s.Checker.ExcludedHosts == nil {
 		s.Checker.ExcludedHosts = []string{}
+	}
+	if s.Traffic.DisablePercent == 0 {
+		s.Traffic.DisablePercent = d.Traffic.DisablePercent
 	}
 	if s.Mihomo.TemplateTypes == nil {
 		s.Mihomo.TemplateTypes = d.Mihomo.TemplateTypes
@@ -212,6 +227,9 @@ func (s *Settings) Validate() error {
 	}
 	if c.MassDownGuardPercent < 0 || c.MassDownGuardPercent > 100 {
 		errs = append(errs, errors.New("checker.massDownGuardPercent must be between 0 and 100"))
+	}
+	if s.Traffic.DisablePercent < 1 || s.Traffic.DisablePercent > 100 {
+		errs = append(errs, errors.New("traffic.disablePercent must be between 1 and 100"))
 	}
 	for _, t := range s.Mihomo.TemplateTypes {
 		if !slices.Contains(MihomoTemplateTypes, t) {

@@ -256,6 +256,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"recoveryMinutes": cfg.Checker.RecoveryMinutes,
 			"intervalSeconds": cfg.Checker.IntervalSeconds,
 			"autoEnable":      cfg.Checker.AutoEnable,
+			"traffic":         cfg.Traffic.Enabled,
+			"trafficPercent":  cfg.Traffic.DisablePercent,
 			"mihomo":          cfg.Mihomo.Enabled,
 			"telegram":        cfg.Telegram.Enabled,
 			"configured":      cfg.PanelConfigured(),

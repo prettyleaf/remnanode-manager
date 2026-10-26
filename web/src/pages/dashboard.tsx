@@ -14,13 +14,14 @@ import type { ReactNode } from "react"
 import { PageHeader } from "@/components/app-shell"
 import { ManagedActions } from "@/components/managed-actions"
 import { HostStateBadge, NodeStatusBadge } from "@/components/status"
+import { TrafficBar } from "@/components/traffic"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { countryFlag, formatDuration, formatRelative, parseTime, useNow } from "@/lib/format"
+import { countryFlag, formatBytes, formatDuration, formatRelative, parseTime, useNow } from "@/lib/format"
 import { useI18n } from "@/lib/i18n"
 import { useStatus } from "@/lib/queries"
 import type { HostView, NodeView } from "@/lib/types"
@@ -73,17 +74,24 @@ export function DashboardPage() {
   const nodeName = new Map(nodes.map((n) => [n.uuid, n.name]))
   const checkedAt = parseTime(snap.checkedAt)
   const nextAt = parseTime(snap.nextCheckAt)
+  const threshold = checker.traffic ? checker.trafficPercent : undefined
+  const nodesHint = [
+    snap.stats.nodesDown > 0 && t("dash.nodesDown", { count: snap.stats.nodesDown }),
+    snap.stats.nodesOverLimit > 0 && t("dash.nodesOverLimit", { count: snap.stats.nodesOverLimit }),
+  ].filter(Boolean)
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         className="mb-0"
         title={t("dash.title")}
-        description={t("dash.rules", {
-          down: checker.downMinutes,
-          recovery: checker.recoveryMinutes,
-          policy: t(`checker.policyShort.${checker.policy}`),
-        })}
+        description={
+          t("dash.rules", {
+            down: checker.downMinutes,
+            recovery: checker.recoveryMinutes,
+            policy: t(`checker.policyShort.${checker.policy}`),
+          }) + (checker.traffic ? t("dash.rulesTraffic", { percent: checker.trafficPercent }) : "")
+        }
       />
 
       {!checker.configured && (
@@ -129,9 +137,9 @@ export function DashboardPage() {
               <span className="text-base font-normal text-muted-foreground"> / {snap.stats.nodesTotal}</span>
             </>
           }
-          hint={snap.stats.nodesDown > 0 ? t("dash.nodesDown", { count: snap.stats.nodesDown }) : undefined}
+          hint={nodesHint.length > 0 ? nodesHint.join(" · ") : undefined}
           icon={<ServerIcon className="size-4" />}
-          tone={snap.stats.nodesDown > 0 ? "danger" : undefined}
+          tone={snap.stats.nodesDown > 0 ? "danger" : snap.stats.nodesOverLimit > 0 ? "warn" : undefined}
         />
         <StatCard
           title={t("dash.hostsAtRisk")}
@@ -180,7 +188,12 @@ export function DashboardPage() {
                   const state = m.state === "disabled" ? "managed" : m.state
                   return (
                     <TableRow key={m.uuid}>
-                      <TableCell className="font-medium">{m.remark}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{m.remark}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {t(m.reason === "traffic" ? "reason.traffic" : "reason.down")}
+                        </div>
+                      </TableCell>
                       <TableCell className="hidden text-muted-foreground md:table-cell">
                         {m.nodes.map((id) => nodeName.get(id) ?? id.slice(0, 8)).join(", ")}
                       </TableCell>
@@ -220,7 +233,7 @@ export function DashboardPage() {
           ) : (
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {nodes.map((n) => (
-                <NodeTile key={n.uuid} node={n} hosts={hosts} now={now} />
+                <NodeTile key={n.uuid} node={n} hosts={hosts} now={now} threshold={threshold} />
               ))}
             </div>
           )}
@@ -230,7 +243,7 @@ export function DashboardPage() {
   )
 }
 
-function NodeTile({ node, hosts, now }: { node: NodeView; hosts: HostView[]; now: number }) {
+function NodeTile({ node, hosts, now, threshold }: { node: NodeView; hosts: HostView[]; now: number; threshold?: number }) {
   const { t, lang } = useI18n()
   const down = parseTime(node.downSince)
   const bound = hosts.filter((h) => h.nodes.includes(node.uuid))
@@ -253,8 +266,14 @@ function NodeTile({ node, hosts, now }: { node: NodeView; hosts: HostView[]; now
         <span>
           {t("nav.hosts")}: {bound.length}
         </span>
+        {node.traffic.limitBytes <= 0 && node.traffic.usedBytes > 0 && (
+          <span>
+            {t("traffic.column")}: {formatBytes(node.traffic.usedBytes, lang)}
+          </span>
+        )}
         {node.excluded && <HostStateBadge state="excluded" />}
       </div>
+      {node.traffic.limitBytes > 0 && <TrafficBar traffic={node.traffic} threshold={threshold} className="mt-2.5" />}
       {node.status === "down" && down && (
         <div className="mt-2 text-xs">
           <span className="text-red-600 dark:text-red-400">{t("node.downFor", { time: formatDuration(now - down.getTime(), lang) })}</span>

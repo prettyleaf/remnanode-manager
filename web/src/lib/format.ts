@@ -24,6 +24,19 @@ export function formatDuration(ms: number, lang: Lang): string {
   return parts.join(" ") || `0 ${units.m}`
 }
 
+/** Binary units, the way the panel counts node traffic. */
+export function formatBytes(bytes: number, lang: Lang): string {
+  const units = lang === "ru" ? ["Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"] : ["B", "KB", "MB", "GB", "TB", "PB"]
+  let v = Math.max(0, bytes)
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  const num = new Intl.NumberFormat(lang, { maximumFractionDigits: v < 100 ? 1 : 0 }).format(v)
+  return `${num} ${units[i]}`
+}
+
 export function formatRelative(date: Date, now: number, lang: Lang): string {
   const diff = (date.getTime() - now) / 1000
   const rtf = new Intl.RelativeTimeFormat(lang, { numeric: "auto" })
