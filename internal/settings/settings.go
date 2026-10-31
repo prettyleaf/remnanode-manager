@@ -24,6 +24,10 @@ const (
 	EventPanelRestored    = "panel_restored"
 	EventGuardTriggered   = "guard_triggered"
 	EventTrafficLimit     = "traffic_limit"
+	EventNodeBlocked      = "node_blocked"
+	EventNodeUnblocked    = "node_unblocked"
+	EventHostsBlocked     = "hosts_blocked"
+	EventBlockGuard       = "block_guard"
 	EventError            = "error"
 )
 
@@ -32,11 +36,15 @@ var EventTypes = []string{
 	EventNodeUp,
 	EventHostsDisabled,
 	EventTrafficLimit,
+	EventNodeBlocked,
+	EventNodeUnblocked,
+	EventHostsBlocked,
 	EventHostsEnabled,
 	EventMihomoUpdated,
 	EventPanelUnreachable,
 	EventPanelRestored,
 	EventGuardTriggered,
+	EventBlockGuard,
 	EventError,
 }
 
@@ -68,6 +76,26 @@ type Checker struct {
 type Traffic struct {
 	Enabled        bool `json:"enabled"`
 	DisablePercent int  `json:"disablePercent"`
+}
+
+// Block watches users online on nodes that stay connected to the panel. When
+// they suddenly vanish, the node's address was most likely blocked for
+// clients while the panel can still reach it.
+type Block struct {
+	Enabled bool `json:"enabled"`
+	// A drop: online at or below this share of the usual level.
+	DropPercent int `json:"dropPercent"`
+	// Nodes with fewer users than this usually are not judged.
+	MinUsers int `json:"minUsers"`
+	// How long a drop must last before it is reported, and how long the
+	// online must stay back before the block is considered gone.
+	ConfirmMinutes int `json:"confirmMinutes"`
+	// When at least this share of the watched nodes drops at once, it is a
+	// common problem rather than blocks. 0 turns the guard off.
+	GuardPercent int `json:"guardPercent"`
+	// Hosts are only disabled when this is on, DisableMinutes after the report.
+	DisableHosts   bool `json:"disableHosts"`
+	DisableMinutes int  `json:"disableMinutes"`
 }
 
 type Mihomo struct {
@@ -102,6 +130,7 @@ type Settings struct {
 	Panel    Panel    `json:"panel"`
 	Checker  Checker  `json:"checker"`
 	Traffic  Traffic  `json:"traffic"`
+	Block    Block    `json:"block"`
 	Mihomo   Mihomo   `json:"mihomo"`
 	Telegram Telegram `json:"telegram"`
 	General  General  `json:"general"`
@@ -117,6 +146,10 @@ var DefaultTemplates = map[string]string{
 	EventPanelRestored:    "🟢 <b>Связь с панелью восстановлена</b>\n\nВерсия: {version}",
 	EventGuardTriggered:   "🛡 <b>Сработала защита от массового отключения</b>\n\nНедоступно нод: {down_nodes} из {total_nodes} ({percent}%). Хосты не отключаются.",
 	EventTrafficLimit:     "📊 <b>Хосты отключены по трафику</b>{dry_run}\n\n{hosts}\n\nПричина: ноды израсходовали {percent}% лимита трафика.",
+	EventNodeBlocked:      "🚫 <b>Похоже, ноду заблокировали</b>\n\n🖥 {node} <code>{node_address}</code>\n👥 Онлайн: {online}, обычно {usual}\n\nНода на связи с панелью, но пользователи пропали.\n{action}",
+	EventNodeUnblocked:    "✅ <b>Онлайн на ноде восстановился</b>\n\n🖥 {node} <code>{node_address}</code>\n👥 Онлайн: {online}, до падения {usual}\n⏱ Без пользователей: {duration}",
+	EventHostsBlocked:     "🚫 <b>Хосты отключены: подозрение на блокировку</b>{dry_run}\n\n{hosts}\n\nПричина: онлайн на нодах упал и не вернулся за {disable_minutes} мин.",
+	EventBlockGuard:       "🛡 <b>Онлайн упал сразу на {drop_nodes} из {total_nodes} нод</b>\n\nЭто похоже на общую проблему (отключение мобильного интернета, сбой статистики панели), а не на блокировку отдельных нод. Пока это продолжается, блокировки не фиксируются.",
 	EventError:            "❗ <b>Ошибка</b>\n\n{error}",
 }
 
@@ -138,6 +171,13 @@ func Default() Settings {
 			ExcludedHosts:   []string{},
 		},
 		Traffic: Traffic{DisablePercent: 95},
+		Block: Block{
+			DropPercent:    15,
+			MinUsers:       20,
+			ConfirmMinutes: 5,
+			GuardPercent:   60,
+			DisableMinutes: 30,
+		},
 		Mihomo: Mihomo{
 			Enabled:            false,
 			TemplateTypes:      []string{"MIHOMO"},
@@ -178,6 +218,18 @@ func (s *Settings) FillDefaults() {
 	}
 	if s.Traffic.DisablePercent == 0 {
 		s.Traffic.DisablePercent = d.Traffic.DisablePercent
+	}
+	if s.Block.DropPercent == 0 {
+		s.Block.DropPercent = d.Block.DropPercent
+	}
+	if s.Block.MinUsers == 0 {
+		s.Block.MinUsers = d.Block.MinUsers
+	}
+	if s.Block.ConfirmMinutes == 0 {
+		s.Block.ConfirmMinutes = d.Block.ConfirmMinutes
+	}
+	if s.Block.DisableMinutes == 0 {
+		s.Block.DisableMinutes = d.Block.DisableMinutes
 	}
 	if s.Mihomo.TemplateTypes == nil {
 		s.Mihomo.TemplateTypes = d.Mihomo.TemplateTypes
@@ -230,6 +282,22 @@ func (s *Settings) Validate() error {
 	}
 	if s.Traffic.DisablePercent < 1 || s.Traffic.DisablePercent > 100 {
 		errs = append(errs, errors.New("traffic.disablePercent must be between 1 and 100"))
+	}
+	b := s.Block
+	if b.DropPercent < 1 || b.DropPercent > 90 {
+		errs = append(errs, errors.New("block.dropPercent must be between 1 and 90"))
+	}
+	if b.MinUsers < 1 || b.MinUsers > 100000 {
+		errs = append(errs, errors.New("block.minUsers must be between 1 and 100000"))
+	}
+	if b.ConfirmMinutes < 1 || b.ConfirmMinutes > 120 {
+		errs = append(errs, errors.New("block.confirmMinutes must be between 1 and 120"))
+	}
+	if b.GuardPercent < 0 || b.GuardPercent > 100 {
+		errs = append(errs, errors.New("block.guardPercent must be between 0 and 100"))
+	}
+	if b.DisableMinutes < 1 || b.DisableMinutes > 1440 {
+		errs = append(errs, errors.New("block.disableMinutes must be between 1 and 1440"))
 	}
 	for _, t := range s.Mihomo.TemplateTypes {
 		if !slices.Contains(MihomoTemplateTypes, t) {

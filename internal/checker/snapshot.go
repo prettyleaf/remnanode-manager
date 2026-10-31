@@ -35,6 +35,8 @@ type Stats struct {
 	HostsAtRisk   int `json:"hostsAtRisk"`
 	// Nodes whose hosts are taken down by the traffic limit.
 	NodesOverLimit int `json:"nodesOverLimit"`
+	// Nodes that look blocked: connected, but their users are gone.
+	NodesBlocked int `json:"nodesBlocked"`
 }
 
 type NodeView struct {
@@ -49,6 +51,18 @@ type NodeView struct {
 	LastMessage string      `json:"lastMessage"`
 	Hosts       []string    `json:"hosts"`
 	Traffic     TrafficView `json:"traffic"`
+	// Users online; nil while the node is not up or the panel does not say.
+	Online *int      `json:"online"`
+	Block  BlockView `json:"block"`
+}
+
+// BlockView is the online drop of a node that stays connected.
+type BlockView struct {
+	// Usual online: frozen when a drop begins, otherwise the median of the
+	// last hour; 0 until there is enough history.
+	Usual        int        `json:"usual"`
+	DropSince    *time.Time `json:"dropSince,omitempty"`
+	BlockedSince *time.Time `json:"blockedSince,omitempty"`
 }
 
 type TrafficView struct {
@@ -124,8 +138,18 @@ func (c *Checker) buildSnapshot(cfg settings.Settings, nodes []remnawave.Node, h
 		if v.Traffic.OverLimit && !v.Excluded {
 			snap.Stats.NodesOverLimit++
 		}
+		if online, ok := ev.online[n.UUID]; ok {
+			v.Online = &online
+		}
+		v.Block.Usual = ev.usual[n.UUID]
 		if st != nil {
 			v.Status, v.DownSince, v.UpSince, v.LastMessage = st.Status, st.DownSince, st.UpSince, st.LastMessage
+			if st.DropSince != nil {
+				v.Block = BlockView{Usual: st.Usual, DropSince: st.DropSince, BlockedSince: st.BlockedSince}
+			}
+			if st.BlockedSince != nil && !v.Excluded {
+				snap.Stats.NodesBlocked++
+			}
 		}
 		switch v.Status {
 		case StatusUp:

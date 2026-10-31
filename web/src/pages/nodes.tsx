@@ -2,7 +2,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { PageHeader } from "@/components/app-shell"
-import { NodeStatusBadge } from "@/components/status"
+import { NodeOnline } from "@/components/online"
+import { BlockBadge, NodeStatusBadge } from "@/components/status"
 import { TrafficBar } from "@/components/traffic"
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
@@ -40,6 +41,7 @@ export function NodesPage() {
                 <TableHead className="pl-4">{t("nodes.name")}</TableHead>
                 <TableHead>{t("nodes.status")}</TableHead>
                 <TableHead className="hidden sm:table-cell">{t("nodes.since")}</TableHead>
+                <TableHead className="hidden md:table-cell">{t("online.column")}</TableHead>
                 <TableHead className="hidden md:table-cell">{t("traffic.column")}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t("nodes.message")}</TableHead>
                 <TableHead className="hidden md:table-cell text-center">{t("nodes.hosts")}</TableHead>
@@ -49,7 +51,7 @@ export function NodesPage() {
             <TableBody>
               {nodes.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                     {t("nodes.empty")}
                   </TableCell>
                 </TableRow>
@@ -69,7 +71,10 @@ export function NodesPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <NodeStatusBadge status={n.status} />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <NodeStatusBadge status={n.status} />
+                        {n.block.blockedSince && <BlockBadge />}
+                      </div>
                     </TableCell>
                     <TableCell className="hidden text-sm text-muted-foreground sm:table-cell">
                       {n.status === "down" && down && (
@@ -78,6 +83,9 @@ export function NodesPage() {
                         </span>
                       )}
                       {n.status === "up" && up && t("node.upFor", { time: formatDuration(now - up.getTime(), lang) })}
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      <NodeOnline node={n} now={now} />
                     </TableCell>
                     <TableCell className="hidden md:table-cell">
                       <TrafficBar traffic={n.traffic} threshold={threshold} className="w-44" />

@@ -24,6 +24,26 @@ type Node struct {
 	TrafficLimitBytes       *float64 `json:"trafficLimitBytes"`
 	TrafficUsedBytes        *float64 `json:"trafficUsedBytes"`
 	TrafficResetDay         *int     `json:"trafficResetDay"`
+	// Users connected right now and Xray uptime in seconds, as last
+	// collected by the panel.
+	UsersOnline *float64 `json:"usersOnline"`
+	XrayUptime  *float64 `json:"xrayUptime"`
+}
+
+// Online returns the number of users on the node, if the panel reports it.
+func (n Node) Online() (int, bool) {
+	if n.UsersOnline == nil || *n.UsersOnline < 0 {
+		return 0, false
+	}
+	return int(*n.UsersOnline), true
+}
+
+// XrayUptimeDuration returns 0 when the panel does not know the uptime.
+func (n Node) XrayUptimeDuration() time.Duration {
+	if n.XrayUptime == nil || *n.XrayUptime <= 0 {
+		return 0
+	}
+	return time.Duration(*n.XrayUptime * float64(time.Second))
 }
 
 // TrafficLimit returns the node's traffic limit, or 0 when it has none.

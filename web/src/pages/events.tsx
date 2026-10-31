@@ -27,6 +27,9 @@ const eventTypes = [
   "panel_unreachable",
   "panel_restored",
   "guard_triggered",
+  "node_blocked",
+  "node_unblocked",
+  "block_guard",
   "error",
   "telegram_failed",
   "login",
@@ -38,6 +41,7 @@ const enableReasons: Record<string, TKey> = {
   manual: "ev.enableReason.manual",
   "nodes recovered": "ev.enableReason.recovered",
   "traffic below limit": "ev.enableReason.traffic",
+  "online recovered": "ev.enableReason.online",
 }
 
 function useEventText() {
@@ -59,6 +63,7 @@ function useEventText() {
       case "dry_run_disable":
         details = Array.isArray(meta.nodes) ? (meta.nodes as string[]).join(", ") : ""
         if (meta.reason === "traffic") details = t("ev.trafficDetails", { percent: String(meta.percent ?? "") }) + (details ? ` · ${details}` : "")
+        if (meta.reason === "blocked") details = t("ev.blockDetails", { minutes: String(meta.minutes ?? "") }) + (details ? ` · ${details}` : "")
         break
       case "host_enabled":
         details = meta.reason ? t(enableReasons[String(meta.reason)] ?? "ev.enableReason.recovered") : ""

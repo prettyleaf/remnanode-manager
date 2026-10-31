@@ -78,9 +78,24 @@ CREATE TABLE IF NOT EXISTS events (
 	host_uuid TEXT NOT NULL DEFAULT '',
 	meta      TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS node_online (
+	uuid   TEXT NOT NULL,
+	ts     INTEGER NOT NULL,
+	online INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS node_online_ts ON node_online(ts);
 `
+
+// Columns added to existing tables after the first release. SQLite has no
+// ADD COLUMN IF NOT EXISTS, so a duplicate column means it is already there.
+var addColumns = []string{
+	`ALTER TABLE node_state ADD COLUMN drop_since INTEGER`,
+	`ALTER TABLE node_state ADD COLUMN blocked_since INTEGER`,
+	`ALTER TABLE node_state ADD COLUMN rise_since INTEGER`,
+	`ALTER TABLE node_state ADD COLUMN usual INTEGER NOT NULL DEFAULT 0`,
+}
 
 func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -96,6 +111,12 @@ func Open(dataDir string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	for _, q := range addColumns {
+		if _, err := db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
 	}
 	s := &Store{db: db}
 	if err := s.loadSettings(); err != nil {
@@ -283,10 +304,22 @@ type NodeState struct {
 	UpSince     *time.Time `json:"upSince"`
 	LastMessage string     `json:"lastMessage"`
 	Notified    bool       `json:"-"`
+
+	// Online drop on a connected node, i.e. a suspected block.
+	DropSince    *time.Time `json:"dropSince"`    // online fell to the drop level
+	BlockedSince *time.Time `json:"blockedSince"` // the drop lasted and was reported
+	RiseSince    *time.Time `json:"riseSince"`    // online came back while blocked
+	Usual        int        `json:"usual"`        // usual online, frozen when the drop began
+}
+
+// ClearBlock forgets an online drop and a block.
+func (n *NodeState) ClearBlock() {
+	n.DropSince, n.BlockedSince, n.RiseSince, n.Usual = nil, nil, nil, 0
 }
 
 func (s *Store) NodeStates(ctx context.Context) (map[string]*NodeState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT uuid, name, status, down_since, up_since, last_message, notified FROM node_state`)
+	rows, err := s.db.QueryContext(ctx, `SELECT uuid, name, status, down_since, up_since, last_message, notified,
+		drop_since, blocked_since, rise_since, usual FROM node_state`)
 	if err != nil {
 		return nil, err
 	}
@@ -294,12 +327,16 @@ func (s *Store) NodeStates(ctx context.Context) (map[string]*NodeState, error) {
 	out := map[string]*NodeState{}
 	for rows.Next() {
 		var n NodeState
-		var down, up sql.NullInt64
-		if err := rows.Scan(&n.UUID, &n.Name, &n.Status, &down, &up, &n.LastMessage, &n.Notified); err != nil {
+		var down, up, drop, blocked, rise sql.NullInt64
+		if err := rows.Scan(&n.UUID, &n.Name, &n.Status, &down, &up, &n.LastMessage, &n.Notified,
+			&drop, &blocked, &rise, &n.Usual); err != nil {
 			return nil, err
 		}
 		n.DownSince = fromNull(down)
 		n.UpSince = fromNull(up)
+		n.DropSince = fromNull(drop)
+		n.BlockedSince = fromNull(blocked)
+		n.RiseSince = fromNull(rise)
 		out[n.UUID] = &n
 	}
 	return out, rows.Err()
@@ -316,8 +353,57 @@ func (s *Store) SaveNodeStates(ctx context.Context, states map[string]*NodeState
 	}
 	now := time.Now().Unix()
 	for _, n := range states {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO node_state(uuid, name, status, down_since, up_since, last_message, notified, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, n.UUID, n.Name, n.Status, toNull(n.DownSince), toNull(n.UpSince), n.LastMessage, n.Notified, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO node_state(uuid, name, status, down_since, up_since, last_message, notified, updated_at,
+			drop_since, blocked_since, rise_since, usual)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, n.UUID, n.Name, n.Status, toNull(n.DownSince), toNull(n.UpSince), n.LastMessage, n.Notified, now,
+			toNull(n.DropSince), toNull(n.BlockedSince), toNull(n.RiseSince), n.Usual); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ---- node online history ----
+
+type OnlineSample struct {
+	Time   time.Time
+	Online int
+}
+
+// OnlineSamples returns the history of every node since the given time,
+// oldest first.
+func (s *Store) OnlineSamples(ctx context.Context, since time.Time) (map[string][]OnlineSample, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT uuid, ts, online FROM node_online WHERE ts >= ? ORDER BY ts`, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]OnlineSample{}
+	for rows.Next() {
+		var id string
+		var ts int64
+		var online int
+		if err := rows.Scan(&id, &ts, &online); err != nil {
+			return nil, err
+		}
+		out[id] = append(out[id], OnlineSample{Time: time.Unix(ts, 0), Online: online})
+	}
+	return out, rows.Err()
+}
+
+// AddOnlineSamples records the online of nodes at t and drops the history
+// older than keepSince.
+func (s *Store) AddOnlineSamples(ctx context.Context, t time.Time, online map[string]int, keepSince time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, `DELETE FROM node_online WHERE ts < ?`, keepSince.Unix()); err != nil {
+		return err
+	}
+	for id, n := range online {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO node_online(uuid, ts, online) VALUES(?, ?, ?)`, id, t.Unix(), n); err != nil {
 			return err
 		}
 	}
@@ -337,6 +423,7 @@ const (
 const (
 	ReasonNodesDown = "nodes down"
 	ReasonTraffic   = "traffic"
+	ReasonBlocked   = "blocked"
 )
 
 type TemplatePatch struct {

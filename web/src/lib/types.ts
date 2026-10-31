@@ -12,6 +12,17 @@ export interface NodeView {
   lastMessage: string
   hosts: string[]
   traffic: NodeTraffic
+  /** null while the node is not up or the panel does not report it. */
+  online: number | null
+  block: NodeBlock
+}
+
+/** Online drop on a node that stays connected: a suspected block. */
+export interface NodeBlock {
+  /** Frozen at the drop while there is one, otherwise the median of the last hour; 0 without history. */
+  usual: number
+  dropSince?: string
+  blockedSince?: string
 }
 
 export interface NodeTraffic {
@@ -22,7 +33,7 @@ export interface NodeTraffic {
   overLimit: boolean
 }
 
-export type DisableReason = "nodes down" | "traffic"
+export type DisableReason = "nodes down" | "traffic" | "blocked"
 
 export type HostState =
   | "ok"
@@ -78,6 +89,7 @@ export interface Stats {
   hostsManaged: number
   hostsAtRisk: number
   nodesOverLimit: number
+  nodesBlocked: number
 }
 
 export interface Snapshot {
@@ -106,6 +118,9 @@ export interface StatusResponse {
     autoEnable: boolean
     traffic: boolean
     trafficPercent: number
+    block: boolean
+    blockHosts: boolean
+    blockMinutes: number
     mihomo: boolean
     telegram: boolean
     configured: boolean
@@ -140,6 +155,15 @@ export interface Settings {
   traffic: {
     enabled: boolean
     disablePercent: number
+  }
+  block: {
+    enabled: boolean
+    dropPercent: number
+    minUsers: number
+    confirmMinutes: number
+    guardPercent: number
+    disableHosts: boolean
+    disableMinutes: number
   }
   mihomo: {
     enabled: boolean

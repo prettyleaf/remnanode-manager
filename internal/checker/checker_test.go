@@ -52,6 +52,8 @@ type fakePanel struct {
 	legacy    bool
 	bulkCalls []string
 	traffic   map[string]*nodeTraffic
+	online    map[string]int     // users online
+	uptime    map[string]float64 // Xray uptime, seconds
 }
 
 type nodeTraffic struct {
@@ -63,6 +65,8 @@ func newFakePanel(legacy bool) *fakePanel {
 	p := &fakePanel{
 		nodes:    map[string]bool{nodeA: true, nodeB: true},
 		traffic:  map[string]*nodeTraffic{},
+		online:   map[string]int{nodeA: 100, nodeB: 100},
+		uptime:   map[string]float64{nodeA: 86400, nodeB: 86400},
 		template: tplYAML,
 		legacy:   legacy,
 		hosts: map[string]map[string]any{
@@ -100,7 +104,8 @@ func (p *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for id, ok := range p.nodes {
 			n := map[string]any{"uuid": id, "name": "node-" + id[:1], "address": "1.1.1.1",
 				"isConnected": ok, "isDisabled": false, "isConnecting": false, "lastStatusMessage": "connection refused",
-				"isTrafficTrackingActive": false, "trafficLimitBytes": nil, "trafficUsedBytes": 0, "trafficResetDay": nil}
+				"isTrafficTrackingActive": false, "trafficLimitBytes": nil, "trafficUsedBytes": 0, "trafficResetDay": nil,
+				"usersOnline": p.online[id], "xrayUptime": p.uptime[id]}
 			if tr := p.traffic[id]; tr != nil {
 				n["isTrafficTrackingActive"], n["trafficUsedBytes"], n["trafficLimitBytes"], n["trafficResetDay"] = tr.tracking, tr.used, tr.limit, 1
 			}
@@ -158,6 +163,18 @@ func (p *fakePanel) setTraffic(id string, tracking bool, used, limit float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.traffic[id] = &nodeTraffic{tracking: tracking, used: used, limit: limit}
+}
+
+func (p *fakePanel) setOnline(id string, users int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.online[id] = users
+}
+
+func (p *fakePanel) setUptime(id string, seconds float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.uptime[id] = seconds
 }
 
 func (p *fakePanel) tpl() string {

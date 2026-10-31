@@ -50,7 +50,9 @@ export function ManagedActions({ host }: { host: ManagedHost }) {
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>{t("managed.enableTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>{t("managed.enableDesc", { host: host.remark })}</AlertDialogDescription>
+              <AlertDialogDescription>
+                {t(host.reason === "blocked" ? "managed.enableDescBlocked" : "managed.enableDesc", { host: host.remark })}
+              </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>

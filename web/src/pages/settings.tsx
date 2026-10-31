@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { BellOffIcon, CheckCircle2Icon, Loader2Icon, PlusIcon, RotateCcwIcon, SendIcon, Trash2Icon, XCircleIcon } from "lucide-react"
 
 import { PageHeader } from "@/components/app-shell"
+import { NodeOnline } from "@/components/online"
 import { TrafficBar } from "@/components/traffic"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -20,6 +21,7 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { api, put, post } from "@/lib/api"
+import { useNow } from "@/lib/format"
 import { useI18n, type TKey } from "@/lib/i18n"
 import { useAuthState, useSettings, useStatus } from "@/lib/queries"
 import type { PanelInfo, Settings, SettingsResponse, SubscriptionTemplate } from "@/lib/types"
@@ -29,11 +31,15 @@ const placeholders: Record<string, string[]> = {
   node_up: ["node", "node_address", "downtime"],
   hosts_disabled: ["hosts", "count", "down_minutes", "dry_run"],
   traffic_limit: ["hosts", "count", "percent", "dry_run"],
+  node_blocked: ["node", "node_address", "online", "usual", "hosts_count", "disable_minutes", "action"],
+  node_unblocked: ["node", "node_address", "online", "usual", "duration"],
+  hosts_blocked: ["hosts", "count", "disable_minutes", "dry_run"],
   hosts_enabled: ["hosts", "count", "dry_run"],
   mihomo_updated: ["template", "action", "host"],
   panel_unreachable: ["error"],
   panel_restored: ["version"],
   guard_triggered: ["down_nodes", "total_nodes", "percent"],
+  block_guard: ["drop_nodes", "total_nodes"],
   error: ["error"],
 }
 
@@ -116,6 +122,7 @@ export function SettingsPage() {
           <TabsTrigger value="panel">{t("settings.tab.panel")}</TabsTrigger>
           <TabsTrigger value="checker">{t("settings.tab.checker")}</TabsTrigger>
           <TabsTrigger value="traffic">{t("settings.tab.traffic")}</TabsTrigger>
+          <TabsTrigger value="block">{t("settings.tab.block")}</TabsTrigger>
           <TabsTrigger value="mihomo">{t("settings.tab.mihomo")}</TabsTrigger>
           <TabsTrigger value="telegram">{t("settings.tab.telegram")}</TabsTrigger>
           <TabsTrigger value="account">{t("settings.tab.account")}</TabsTrigger>
@@ -170,6 +177,9 @@ function SettingsForm({ data, tab }: { data: SettingsResponse; tab: string }) {
       </TabsContent>
       <TabsContent value="traffic">
         <TrafficCard draft={draft} update={update} />
+      </TabsContent>
+      <TabsContent value="block">
+        <BlockCard draft={draft} update={update} />
       </TabsContent>
       <TabsContent value="mihomo">
         <MihomoCard draft={draft} update={update} types={data.templateTypes} />
@@ -443,6 +453,96 @@ function TrafficCard({ draft, update }: CardProps) {
                   <div key={n.uuid} className="rounded-md border px-3 py-2">
                     <div className="mb-1.5 truncate text-sm font-medium">{n.name}</div>
                     <TrafficBar traffic={n.traffic} threshold={tr.enabled ? tr.disablePercent : undefined} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BlockCard({ draft, update }: CardProps) {
+  const { t } = useI18n()
+  const { data: status } = useStatus()
+  const now = useNow()
+  const b = draft.block
+  const nodes = (status?.snapshot.nodes ?? []).filter((n) => n.online != null)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("block.title")}</CardTitle>
+        <CardDescription className="leading-relaxed">{t("block.desc")}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-5">
+        <SwitchRow
+          id="block-enabled"
+          label={t("block.enabled")}
+          hint={t("block.enabledHint")}
+          checked={b.enabled}
+          onChange={(v) => update((d) => void (d.block.enabled = v))}
+        />
+        <Separator />
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field label={t("block.drop")} hint={t("block.dropHint")} htmlFor="block-drop">
+            <NumberInput id="block-drop" min={1} max={90} value={b.dropPercent} onChange={(v) => update((d) => void (d.block.dropPercent = v))} />
+          </Field>
+          <Field label={t("block.minUsers")} hint={t("block.minUsersHint")} htmlFor="block-min">
+            <NumberInput id="block-min" min={1} max={100000} value={b.minUsers} onChange={(v) => update((d) => void (d.block.minUsers = v))} />
+          </Field>
+          <Field label={t("block.confirm")} hint={t("block.confirmHint")} htmlFor="block-confirm">
+            <NumberInput
+              id="block-confirm"
+              min={1}
+              max={120}
+              value={b.confirmMinutes}
+              onChange={(v) => update((d) => void (d.block.confirmMinutes = v))}
+            />
+          </Field>
+          <Field label={t("block.guard")} hint={t("block.guardHint")} htmlFor="block-guard">
+            <NumberInput id="block-guard" min={0} max={100} value={b.guardPercent} onChange={(v) => update((d) => void (d.block.guardPercent = v))} />
+          </Field>
+        </div>
+        <Separator />
+        <SwitchRow
+          id="block-hosts"
+          label={t("block.disableHosts")}
+          hint={t("block.disableHostsHint")}
+          checked={b.disableHosts}
+          onChange={(v) => update((d) => void (d.block.disableHosts = v))}
+        />
+        {b.disableHosts && (
+          <Field label={t("block.disableMinutes")} hint={t("block.disableMinutesHint")} htmlFor="block-disable">
+            <NumberInput
+              id="block-disable"
+              min={1}
+              max={1440}
+              value={b.disableMinutes}
+              onChange={(v) => update((d) => void (d.block.disableMinutes = v))}
+            />
+          </Field>
+        )}
+        <Separator />
+        <div className="grid gap-2">
+          <Label>{t("block.nodes")}</Label>
+          {nodes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t("block.nodesEmpty")}</p>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">{t("block.nodesHint")}</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {nodes.map((n) => (
+                  <div key={n.uuid} className="flex items-start justify-between gap-3 rounded-md border px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{n.name}</div>
+                      {n.block.usual > 0 && n.block.usual < b.minUsers && (
+                        <div className="text-xs text-muted-foreground">{t("block.notWatched")}</div>
+                      )}
+                    </div>
+                    <NodeOnline node={n} now={now} className="shrink-0 justify-items-end text-right" />
                   </div>
                 ))}
               </div>

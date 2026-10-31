@@ -78,7 +78,13 @@ export function DashboardPage() {
   const nodesHint = [
     snap.stats.nodesDown > 0 && t("dash.nodesDown", { count: snap.stats.nodesDown }),
     snap.stats.nodesOverLimit > 0 && t("dash.nodesOverLimit", { count: snap.stats.nodesOverLimit }),
+    snap.stats.nodesBlocked > 0 && t("dash.nodesBlocked", { count: snap.stats.nodesBlocked }),
   ].filter(Boolean)
+  const blockRules = checker.blockHosts
+    ? t("dash.rulesBlockHosts", { minutes: checker.blockMinutes })
+    : checker.block
+      ? t("dash.rulesBlock")
+      : ""
 
   return (
     <div className="flex flex-col gap-6">
@@ -90,7 +96,9 @@ export function DashboardPage() {
             down: checker.downMinutes,
             recovery: checker.recoveryMinutes,
             policy: t(`checker.policyShort.${checker.policy}`),
-          }) + (checker.traffic ? t("dash.rulesTraffic", { percent: checker.trafficPercent }) : "")
+          }) +
+          (checker.traffic ? t("dash.rulesTraffic", { percent: checker.trafficPercent }) : "") +
+          blockRules
         }
       />
 
@@ -139,7 +147,7 @@ export function DashboardPage() {
           }
           hint={nodesHint.length > 0 ? nodesHint.join(" · ") : undefined}
           icon={<ServerIcon className="size-4" />}
-          tone={snap.stats.nodesDown > 0 ? "danger" : snap.stats.nodesOverLimit > 0 ? "warn" : undefined}
+          tone={snap.stats.nodesDown > 0 ? "danger" : snap.stats.nodesOverLimit > 0 || snap.stats.nodesBlocked > 0 ? "warn" : undefined}
         />
         <StatCard
           title={t("dash.hostsAtRisk")}
@@ -191,7 +199,7 @@ export function DashboardPage() {
                       <TableCell>
                         <div className="font-medium">{m.remark}</div>
                         <div className="text-xs text-muted-foreground">
-                          {t(m.reason === "traffic" ? "reason.traffic" : "reason.down")}
+                          {t(m.reason === "traffic" ? "reason.traffic" : m.reason === "blocked" ? "reason.blocked" : "reason.down")}
                         </div>
                       </TableCell>
                       <TableCell className="hidden text-muted-foreground md:table-cell">
@@ -251,9 +259,22 @@ function NodeTile({ node, hosts, now, threshold }: { node: NodeView; hosts: Host
   const disableAt = atRisk
     .map((h) => parseTime(h.disableAt)?.getTime() ?? Infinity)
     .reduce((a, b) => Math.min(a, b), Infinity)
+  const drop = parseTime(node.block.dropSince)
+  const blocked = node.status === "up" && drop && node.block.blockedSince
+  const disableNote = Number.isFinite(disableAt) && (
+    <span className="text-amber-600 dark:text-amber-400">
+      {" · "}
+      {disableAt > now ? t("state.disableIn", { time: formatDuration(disableAt - now, lang) }) : t("state.disableSoon")}
+    </span>
+  )
 
   return (
-    <div className={"rounded-lg border p-3 " + (node.status === "down" ? "border-red-500/40 bg-red-500/5" : "")}>
+    <div
+      className={
+        "rounded-lg border p-3 " +
+        (node.status === "down" ? "border-red-500/40 bg-red-500/5" : blocked ? "border-amber-500/40 bg-amber-500/5" : "")
+      }
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-base leading-none">{countryFlag(node.countryCode)}</span>
@@ -266,6 +287,11 @@ function NodeTile({ node, hosts, now, threshold }: { node: NodeView; hosts: Host
         <span>
           {t("nav.hosts")}: {bound.length}
         </span>
+        {node.online != null && (
+          <span>
+            {t("online.column")}: {node.online}
+          </span>
+        )}
         {node.traffic.limitBytes <= 0 && node.traffic.usedBytes > 0 && (
           <span>
             {t("traffic.column")}: {formatBytes(node.traffic.usedBytes, lang)}
@@ -277,14 +303,16 @@ function NodeTile({ node, hosts, now, threshold }: { node: NodeView; hosts: Host
       {node.status === "down" && down && (
         <div className="mt-2 text-xs">
           <span className="text-red-600 dark:text-red-400">{t("node.downFor", { time: formatDuration(now - down.getTime(), lang) })}</span>
-          {Number.isFinite(disableAt) && (
-            <span className="text-amber-600 dark:text-amber-400">
-              {" · "}
-              {disableAt > now
-                ? t("state.disableIn", { time: formatDuration(disableAt - now, lang) })
-                : t("state.disableSoon")}
-            </span>
-          )}
+          {disableNote}
+        </div>
+      )}
+      {blocked && (
+        <div className="mt-2 text-xs">
+          <span className="text-amber-600 dark:text-amber-400">
+            {t("block.badge")} · {t("block.blockedFor", { time: formatDuration(now - drop.getTime(), lang) })}
+            {node.block.usual > 0 && ` · ${t("online.usual", { count: node.block.usual })}`}
+          </span>
+          {disableNote}
         </div>
       )}
     </div>
